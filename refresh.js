@@ -1,14 +1,47 @@
 const axios = require('axios');
 
-async function refreshCookie(roblosecurityCookie) {
+async function fetchSessionCSRFToken(roblosecurityCookie) {
     try {
-        const response = await axios.get("https://www.roblox.com/home", {
+        await axios.post("https://auth.roblox.com/v2/logout", {}, {
             headers: {
                 'Cookie': `.ROBLOSECURITY=${roblosecurityCookie}`
             }
         });
 
-        // Extract the new cookie if it's set in the response headers
+        return null;
+    } catch (error) {
+        return error.response?.headers["x-csrf-token"] || null;
+    }
+}
+
+async function generateAuthTicket(roblosecurityCookie) {
+    try {
+        const csrfToken = await fetchSessionCSRFToken(roblosecurityCookie);
+        const response = await axios.post("https://auth.roblox.com/v1/authentication-ticket", {}, {
+            headers: {
+                "x-csrf-token": csrfToken,
+                "referer": "https://www.roblox.com/madebySynaptrixBitch",
+                'Content-Type': 'application/json',
+                'Cookie': `.ROBLOSECURITY=${roblosecurityCookie}`
+            }
+        });
+
+        return response.headers['rbx-authentication-ticket'] || "Failed to fetch auth ticket";
+    } catch (error) {
+        return "Failed to fetch auth ticket";
+    }
+}
+
+async function redeemAuthTicket(authTicket) {
+    try {
+        const response = await axios.post("https://auth.roblox.com/v1/authentication-ticket/redeem", {
+            "authenticationTicket": authTicket
+        }, {
+            headers: {
+                'RBXAuthenticationNegotiation': '1'
+            }
+        });
+
         const refreshedCookieData = response.headers['set-cookie']?.toString() || "";
 
         return {
@@ -23,6 +56,8 @@ async function refreshCookie(roblosecurityCookie) {
     }
 }
 
+// ✅ Properly exporting the functions
 module.exports = {
-    refreshCookie
+    generateAuthTicket,
+    redeemAuthTicket
 };
